@@ -11,5 +11,6 @@ autoclicker_scripts.json
 # 日志与临时文件
 *.log
 pid.txt
+*.bak
 tests/run.log
 tests/*.log

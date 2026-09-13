@@ -1,7 +1,7 @@
 # AutoClicker Pro — 项目交接文档
 
 > 给接手本项目的 AI / 开发者：本文档足以在 10 分钟内理解项目全貌。
-> 当前版本 v4.5 · 全量回归测试 45/45 通过 · 状态：功能冻结，仅待上传 GitHub。
+> 当前版本 v4.6 · 全量回归测试 45/45 通过 · 已上传 GitHub（Releases 提供打包 exe）。
 
 ## 一、这是什么
 
@@ -127,3 +127,11 @@ pos_mode(follow/fixed/multi) · pos_x/pos_y · interval+unit · jitter+jitter_un
 human · click_action(single/double/drag) · pos_jitter · button(left/right) ·
 loops · speed · rec_jitter · rec_pos_jitter · rec_loops · rec_human ·
 auto_load · theme(light/dark) · points([[x,y],...]) · corner_stop · close_to_tray
+
+## 十、变更记录
+
+- **v4.6**：界面适配改进——动态窗口尺寸（`_fit_window`，中英文宽度自适应）、
+  坐标标签超长省略、回放预览自动换行、全局字体改微软雅黑、顶栏改悬浮圆角卡片、
+  托盘"退出"与关闭到托盘行为区分（`_quit` 标志）；移除多点列表"＋添加当前"
+  快捷按钮与若干未使用的文案键；清理重复导入与冗余主题色键。
+- **v4.5**：功能冻结基线（本档所述架构与坑位均以此版为准）。

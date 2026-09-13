@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-AutoClicker Pro — Windows 鼠标连点器 & 录制回放（PySide6 / Qt 版）
-设计语言：Apple 液态玻璃 / macOS（中性灰阶、发丝线、抗锯齿圆角、
-药丸按钮、按压/悬停反馈、语义色、动画开关与分段控制器）
+AutoClicker Pro — Windows 鼠标连点器 & 录制回放（PySide6 / Qt 版）v4.6
+设计语言：Apple 液态玻璃 / macOS（中性灰阶、发丝线、抗锯齿圆角、药丸按钮、
+按压/悬停反馈、语义色、动画开关与分段控制器）
 
-- 中英双语（跟随系统语言，可切换，设置自动保存）
-- 连点：当前鼠标位置或固定坐标，间隔=中心±抖动，拟人化随机
+- 连点：跟随鼠标 / 固定坐标（3秒拾取）/ 多点循环（坐标列表，支持单击/双击/拖动）
+- 拟人化防检测：高斯间隔 + 5%走神停顿 + 高斯位置偏移 + 随机按下时长
 - 录制：完整宏（移动轨迹+按下/抬起，支持拖动、双击），不丢快速点击
-- 回放：平滑路径重放，绝对时间轴不漂移，双击对保持有效，拟人化防检测
-- 配置导入/导出
+- 回放：平滑路径、绝对时间轴、双击对保护，速度/抖动/偏移/循环可调
+- 脚本库（命名保存/下拉切换）、配置导入导出、系统托盘、紧急停止（甩角）
+- 中英双语 + 浅色/深色主题 + 设置自动持久化
+- 全局热键：F6=连点 F8=录制 F9=回放
 
-热键（全局）: F6=连点  F8=录制  F9=回放
-
-线程模型：pynput 钩子线程只写数据结构，一切界面更新经队列由
-QTimer 在 GUI 线程统一执行。
+线程模型：钩子/轮询线程只写数据结构，一切界面更新经 _ui_q 队列由
+QTimer 在 GUI 线程统一执行。所有可中断等待用 sleep 轮询（勿改 Event.wait）。
 """
 import ctypes
 import json
@@ -29,9 +29,10 @@ from PySide6.QtCore import (QTimer, Qt, QSize, QEasingCurve, QVariantAnimation,
 from PySide6.QtGui import QColor, QIcon, QPainter, QFont, QFontMetrics, QAction
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                QPushButton, QLineEdit, QFrame, QVBoxLayout,
-                               QHBoxLayout, QGridLayout, QTabWidget, QTextEdit, QMessageBox,
-                               QFileDialog, QGraphicsDropShadowEffect, QScrollArea,
-                               QSystemTrayIcon, QMenu, QComboBox, QInputDialog)
+                               QHBoxLayout, QGridLayout, QTabWidget, QTextEdit,
+                               QMessageBox, QFileDialog, QGraphicsDropShadowEffect,
+                               QScrollArea, QSystemTrayIcon, QMenu, QComboBox,
+                               QInputDialog, QSizePolicy)
 
 from pynput import mouse, keyboard
 
@@ -51,30 +52,16 @@ TR = {
         "pick_countdown": "移到目标… {n}", "pick_cancel": "取消拾取",
         "picking": "拾取中：请把鼠标移到目标位置 ({n} 秒后捕获)",
         "points_hint": "按列表顺序依次点击，循环往复",
-        "add_current": "＋ 添加当前", "pick_add": "◈ 拾取添加 (3秒)",
+        "pick_add": "◈ 拾取添加 (3秒)",
         "points_empty": "列表为空 — 点“拾取添加”或手动输入坐标",
         "theme_light": "浅色", "theme_dark": "深色", "appearance": "外观",
-        "corner_stop": "紧急停止", "corner_sub": "鼠标甩到屏幕左上角，立即停止全部动作",
-        "corner_stopped": "已紧急停止（鼠标移到屏幕角落）",
-        "close_to_tray": "关闭时最小化到托盘",
-        "tray_show": "显示主窗口", "tray_quit": "退出",
-        "menu_click": "连点 · F6", "menu_stop_click": "停止连点 · F6",
-        "menu_rec": "录制 · F8", "menu_stop_rec": "停止录制 · F8",
-        "menu_play": "回放 · F9", "menu_stop_play": "停止回放 · F9",
-        "tray_note": "已最小化到托盘 · F6/F8/F9 热键仍可用",
-        "click_action": "点击动作",
-        "action_single": "单击", "action_double": "双击", "action_drag": "拖动",
-        "script_lib": "脚本库", "lib_save": "保存", "lib_load": "加载", "lib_del": "删除",
-        "lib_name": "脚本名称", "lib_default": "脚本",
-        "lib_confirm": "确定删除脚本“%s”？",
-        "lib_saved": "已保存脚本“%s”", "lib_loaded": "已加载脚本“%s”",
-        "lib_deleted": "已删除脚本“%s”", "lib_nothing": "当前没有录制内容可保存",
-        "interval": "点击间隔", "jitter": "随机抖动", "same_unit": "同单位",
+        "interval": "点击间隔", "jitter": "随机抖动",
         "human": "拟人模式", "human_sub": "高斯分布随机 + 偶尔走神停顿，防统计检测",
         "pos_jitter": "位置偏移", "pos_jitter_unit": "px", "mouse_button": "鼠标按键",
         "left": "左", "right": "右", "loops": "循环次数", "loops_unit": "次  ·  0 = 无限",
         "start": "开始连点 · F6", "stop_click": "停止连点 · F6",
-        "record": "●  录制 · F8", "stop_rec": "■  停止录制 · F8", "play": "▶  回放 · F9", "stop_play": "■  停止回放 · F9",
+        "record": "●  录制 · F8", "stop_rec": "■  停止录制 · F8",
+        "play": "▶  回放 · F9", "stop_play": "■  停止回放 · F9",
         "clear": "清空", "save_script": "导出脚本", "load_script": "导入脚本",
         "export_cfg": "⭳  导出配置", "import_cfg": "⭱  导入配置",
         "rec_card": "录制状态", "play_card": "回放设置",
@@ -87,9 +74,24 @@ TR = {
         "general": "通用", "cfg_card": "配置管理", "cfg_note": "设置自动保存到本机。导出的配置包含全部参数与录制脚本，可在其他电脑导入还原。",
         "auto_load": "启动时恢复上次设置", "about": "关于",
         "language": "界面语言",
+        "corner_stop": "紧急停止", "corner_sub": "鼠标甩到屏幕左上角，立即停止全部动作",
+        "corner_stopped": "已紧急停止（鼠标移到屏幕角落）",
+        "close_to_tray": "关闭时最小化到托盘",
+        "tray_show": "显示主窗口", "tray_quit": "退出",
+        "tray_note": "已最小化到托盘 · F6/F8/F9 热键仍可用",
+        "menu_click": "连点 · F6", "menu_stop_click": "停止连点 · F6",
+        "menu_rec": "录制 · F8", "menu_stop_rec": "停止录制 · F8",
+        "menu_play": "回放 · F9", "menu_stop_play": "停止回放 · F9",
+        "click_action": "点击动作",
+        "action_single": "单击", "action_double": "双击", "action_drag": "拖动",
+        "script_lib": "脚本库", "lib_save": "保存", "lib_del": "删除",
+        "lib_name": "脚本名称", "lib_default": "脚本",
+        "lib_confirm": "确定删除脚本“%s”？",
+        "lib_saved": "已保存脚本“%s”", "lib_loaded": "已加载脚本“%s”",
+        "lib_deleted": "已删除脚本“%s”", "lib_nothing": "当前没有录制内容可保存",
         "state_idle": "空闲", "state_click": "连点中", "state_rec": "录制中", "state_play": "回放中",
         "status_ready": "就绪",
-        "pick_ok": "已填入当前鼠标坐标 ({x}, {y})",
+        "pick_ok": "已捕获当前鼠标坐标 ({x}, {y})",
         "clicking": "连点中… 已点击 {n} 次", "click_done": "连点结束，共 {n} 次",
         "recording": "录制中… (F8 停止)",
         "rec_done": "录制结束：{c} 次点击，{m} 个移动点",
@@ -124,30 +126,16 @@ TR = {
         "pick_countdown": "Move to target… {n}", "pick_cancel": "Cancel pick",
         "picking": "Picking: move the mouse to the target ({n}s)",
         "points_hint": "Clicks the points in order, cycling forever",
-        "add_current": "＋ Add current", "pick_add": "◈ Pick & add (3s)",
+        "pick_add": "◈ Pick & add (3s)",
         "points_empty": "List is empty — pick or type coordinates",
         "theme_light": "Light", "theme_dark": "Dark", "appearance": "Appearance",
-        "corner_stop": "Emergency stop", "corner_sub": "Fling mouse to the top-left corner to stop everything",
-        "corner_stopped": "Emergency-stopped (mouse at screen corner)",
-        "close_to_tray": "Close to tray",
-        "tray_show": "Show Window", "tray_quit": "Quit",
-        "menu_click": "Clicking · F6", "menu_stop_click": "Stop Clicking · F6",
-        "menu_rec": "Record · F8", "menu_stop_rec": "Stop Recording · F8",
-        "menu_play": "Replay · F9", "menu_stop_play": "Stop Replay · F9",
-        "tray_note": "Hidden to tray · hotkeys F6/F8/F9 still work",
-        "click_action": "Click Action",
-        "action_single": "Single", "action_double": "Double", "action_drag": "Drag",
-        "script_lib": "Script Library", "lib_save": "Save", "lib_load": "Load", "lib_del": "Delete",
-        "lib_name": "Script name", "lib_default": "Script",
-        "lib_confirm": 'Delete script "%s"?',
-        "lib_saved": 'Saved script "%s"', "lib_loaded": 'Loaded script "%s"',
-        "lib_deleted": 'Deleted script "%s"', "lib_nothing": "Nothing recorded to save",
-        "interval": "Interval", "jitter": "Jitter", "same_unit": "same unit",
+        "interval": "Interval", "jitter": "Jitter",
         "human": "Humanize", "human_sub": "Gaussian randomness + occasional pauses, resists detection",
         "pos_jitter": "Position offset", "pos_jitter_unit": "px", "mouse_button": "Button",
         "left": "L", "right": "R", "loops": "Loops", "loops_unit": "·  0 = infinite",
         "start": "Start Clicking · F6", "stop_click": "Stop Clicking · F6",
-        "record": "●  Record · F8", "stop_rec": "■  Stop Recording · F8", "play": "▶  Replay · F9", "stop_play": "■  Stop Replay · F9",
+        "record": "●  Record · F8", "stop_rec": "■  Stop Recording · F8",
+        "play": "▶  Replay · F9", "stop_play": "■  Stop Replay · F9",
         "clear": "Clear", "save_script": "Export Script", "load_script": "Import Script",
         "export_cfg": "⭳  Export Config", "import_cfg": "⭱  Import Config",
         "rec_card": "Recording", "play_card": "Playback Settings",
@@ -160,9 +148,24 @@ TR = {
         "general": "General", "cfg_card": "Configuration", "cfg_note": "Settings persist automatically. Exported config contains all parameters and the recorded script — import it on another PC.",
         "auto_load": "Restore last settings on startup", "about": "About",
         "language": "Language",
+        "corner_stop": "Emergency stop", "corner_sub": "Fling mouse to the top-left corner to stop everything",
+        "corner_stopped": "Emergency-stopped (mouse at screen corner)",
+        "close_to_tray": "Close to tray",
+        "tray_show": "Show Window", "tray_quit": "Quit",
+        "tray_note": "Hidden to tray · hotkeys F6/F8/F9 still work",
+        "menu_click": "Clicking · F6", "menu_stop_click": "Stop Clicking · F6",
+        "menu_rec": "Record · F8", "menu_stop_rec": "Stop Recording · F8",
+        "menu_play": "Replay · F9", "menu_stop_play": "Stop Replay · F9",
+        "click_action": "Click Action",
+        "action_single": "Single", "action_double": "Double", "action_drag": "Drag",
+        "script_lib": "Script Library", "lib_save": "Save", "lib_del": "Delete",
+        "lib_name": "Script name", "lib_default": "Script",
+        "lib_confirm": 'Delete script "%s"?',
+        "lib_saved": 'Saved script "%s"', "lib_loaded": 'Loaded script "%s"',
+        "lib_deleted": 'Deleted script "%s"', "lib_nothing": "Nothing recorded to save",
         "state_idle": "Idle", "state_click": "Clicking", "state_rec": "Recording", "state_play": "Replaying",
         "status_ready": "Ready",
-        "pick_ok": "Filled current mouse position ({x}, {y})",
+        "pick_ok": "Captured current mouse position ({x}, {y})",
         "clicking": "Clicking… {n} clicks", "click_done": "Clicking finished, {n} total",
         "recording": "Recording… (F8 to stop)",
         "rec_done": "Recording done: {c} clicks, {m} move points",
@@ -189,8 +192,8 @@ TR = {
 }
 
 HELP_TEXT = {
-    "zh": '【快速上手】\n\n◆ 自动连点（三种模式）\n  · 跟随鼠标：鼠标移到哪点到哪。按 F6 开始，再按 F6 停止。\n  · 固定坐标：点“拾取位置 (3秒)”，在倒计时内把鼠标移到目标处自动捕获坐标；\n    之后按 F6 即在该点连点，期间可以切去其他窗口做事（不要遮挡目标位置）。\n  · 多点循环：把多个坐标加入列表（“拾取添加”倒计时捕获，或手动输入，\n    列表最多显示 3 行，更多可滚动，每行可编辑、可删除），连点按顺序轮流循环。\n  · 间隔与抖动单位互相独立，都可选 ms 或 s，例如“每 5 秒 ± 100ms”。\n  · 循环次数填 0 表示无限。\n\n◆ 录制回放\n  按 F8 开始录制，正常操作即可——移动轨迹、按下/抬起、双击、拖动、每次\n  操作的实际间隔都会被记录；再按 F8 结束。按 F9 回放，可调速度倍率、\n  间隔抖动、位置偏移、循环次数。录制内容可“导出脚本/导入脚本”反复使用。\n\n◆ 拟人化防检测\n  开启后：间隔按高斯分布随机（中心密集、偶尔偏快偏慢）；每次点击约 5% 概率\n  插入 80–350ms“走神”停顿；落点按高斯分布偏移；按下时长随机。固定周期是\n  最容易被统计方式识别的机器特征，建议始终保持开启。回放的“双击对”会被\n  自动识别保护：两次点击共用偏移、间隔保持在系统双击时限内。\n\n◆ 全局热键（任何窗口下有效）\n  F6 开始/停止连点 · F8 开始/停止录制 · F9 开始/停止回放\n  触发后会自动跳到对应页面显示状态。\n\n◆ 配置与外观\n  · 所有设置自动保存，下次打开原样恢复。\n  · “设置”页可导出/导入完整配置（含全部参数与录制脚本），换电脑一键还原。\n  · 顶栏 ☀/🌙 切换浅色/深色主题；窗口可自由拉伸与最大化。\n\n【常见问题】\n\n· 连点时还能用鼠标干别的事吗？\n  “固定坐标”模式可以：自动点击注入到固定点，你的鼠标在其他窗口正常工作\n  （注意别让其他窗口挡住目标位置）。“跟随鼠标”“多点循环”和“回放”都会\n  占用鼠标，期间无法干别的。\n· 录不到某些窗口的点击？\n  目标程序若以管理员身份运行，普通权限的程序收不到它的输入事件。右键本软件\n  →“以管理员身份运行”再录制。\n· 通过远程桌面(RDP)连接无屏电脑使用？\n  本软件已声明 DPI 感知，坐标系自动统一。注意：录制和回放时保持 RDP 窗口\n  分辨率一致；录制期间保持会话连接。\n· 回放的双击变成两次单击？\n  本软件已自动识别“双击对”：回放时两次点击共用位置偏移、间隔保持在系统\n  双击时限内。若仍异常，把“位置偏移”调小（≤3px）。\n· 杀毒软件报毒？\n  PyInstaller 打包的单文件程序偶发误报，加入白名单即可。\n· 点击无效？\n  某些游戏/应用使用驱动级输入检测，SendInput 无法生效；模拟器窗口一般正常。\n  请勿最小化目标窗口。\n',
-    "en": '[Quick Start]\n\n◆ Auto Clicking (three modes)\n  · Follow mouse: clicks wherever the mouse is. F6 to start, F6 to stop.\n  · Fixed position: click "Pick position (3s)", move the mouse to the target\n    within the countdown — the position is captured automatically. Then F6\n    clicks that point while you work in other windows (don\'t cover it).\n  · Multi-point: add coordinates to the list ("Pick & add" countdown or type\n    them; up to 3 rows visible, scroll for more; editable, deletable) —\n    clicking cycles through the list in order.\n  · Interval and jitter each have their own ms/s unit, e.g. "every 5s ± 100ms".\n  · Loops = 0 means infinite.\n\n◆ Record & Replay\n  Press F8 to record — move paths, press/release, double-clicks, drags and the\n  real timing of every action are captured; F8 again to finish. F9 replays with\n  speed, interval jitter, position offset and loops. Export/Import scripts to\n  reuse recordings.\n\n◆ Humanized anti-detection\n  When on: intervals follow a Gaussian distribution (dense near center,\n  occasionally faster/slower); each click has ~5% chance of an 80–350ms\n  micro-pause; landing points are Gaussian-offset; press duration is random.\n  Fixed periods are the easiest machine signature to detect statistically —\n  keep it on. Replayed "double-click pairs" are protected automatically:\n  both clicks share one offset and the gap stays within the system limit.\n\n◆ Click Action (extensions)\n  In "Click Behavior" choose: Single (default), Double (two fast clicks at the\n  same point, gap kept within the system double-click limit), Drag (press →\n  smooth move → release; in Multi-point mode it drags from one coordinate to\n  the next — A to B, then B to C, cycling).\n\n◆ Script Library\n  Save the current recording as a named script, switch via the dropdown, then\n  Load or Delete. The library persists locally; use config export/import to\n  move everything to another PC.\n\n◆ Tray & Emergency Stop\n  Closing the window minimizes to the system tray (right-click the tray icon\n  for start/stop/quit; can be disabled in Settings). With "Emergency stop" on,\n  flinging the mouse to the top-left corner while running instantly stops\n  clicking/replay/recording and shows a notification — the safety switch when\n  a script runs away.\n\n◆ Global Hotkeys (work over any window)\n  F6 click · F8 record · F9 replay\n  Triggering a hotkey switches to the matching tab so status is visible.\n\n◆ Config & Appearance\n  · All settings persist automatically.\n  · Export/Import the full config (all parameters + recorded script) in\n    Settings to move to another PC.\n  · ☀/🌙 in the header switches light/dark theme; the window is freely\n    resizable and maximizable.\n\n[FAQ]\n\n· Can I use the mouse for other things while auto-clicking?\n  "Fixed position" mode: yes — clicks are injected at the fixed point while you\n  work in other windows (don\'t cover the target). "Follow mouse", "Multi-point"\n  and Replay occupy the mouse, so no.\n· Some windows can\'t be recorded?\n  If the target app runs as administrator, a normal-privilege app cannot receive\n  its input. Right-click this app → "Run as administrator", then record.\n· Using a headless PC via RDP?\n  This app is DPI-aware, so coordinate systems unify automatically. Keep the RDP\n  window resolution the same between recording and replay; stay connected while\n  recording.\n· Replayed double-clicks become two single clicks?\n  Double-click pairs are detected automatically: both clicks share one position\n  offset and the gap stays within the system double-click time. If it still\n  fails, reduce "Position offset" to <= 3 px.\n· Antivirus flags the exe?\n  Occasional false positive for PyInstaller one-file builds — add an exclusion.\n· Clicks have no effect?\n  Some games/apps use driver-level input checks that SendInput cannot pass.\n  Emulator windows normally work. Do not minimize the target window.\n',
+    "zh": '【快速上手】\n\n◆ 自动连点（三种模式）\n  · 跟随鼠标：鼠标移到哪点到哪。按 F6 开始，再按 F6 停止。\n  · 固定坐标：点“拾取位置 (3秒)”，在倒计时内把鼠标移到目标处自动捕获坐标；\n    之后按 F6 即在该点连点，期间可以切去其他窗口做事（不要遮挡目标位置）。\n  · 多点循环：把多个坐标加入列表（“拾取添加”倒计时捕获，或手动输入，\n    列表最多显示 3 行，更多可滚动，每行可编辑、可删除），连点按顺序轮流循环。\n  · 间隔与抖动单位互相独立，都可选 ms 或 s，例如“每 5 秒 ± 100ms”。\n  · 循环次数填 0 表示无限。\n\n◆ 录制回放\n  按 F8 开始录制，正常操作即可——移动轨迹、按下/抬起、双击、拖动、每次\n  操作的实际间隔都会被记录；再按 F8 结束。按 F9 回放，可调速度倍率、\n  间隔抖动、位置偏移、循环次数。录制内容可“导出脚本/导入脚本”反复使用。\n\n◆ 拟人化防检测\n  开启后：间隔按高斯分布随机（中心密集、偶尔偏快偏慢）；每次点击约 5% 概率\n  插入 80–350ms“走神”停顿；落点按高斯分布偏移；按下时长随机。固定周期是\n  最容易被统计方式识别的机器特征，建议始终保持开启。回放的“双击对”会被\n  自动识别保护：两次点击共用偏移、间隔保持在系统双击时限内。\n\n◆ 点击动作（连点扩展）\n  “点击方式”里可选：单击（默认）、双击（同一位置快速两击，间隔自动保持在\n  系统双击时限内）、拖动（按住→平滑移动→松开；多点循环模式下会从上一个\n  坐标拖到下一个坐标，即 A 拖到 B、B 拖到 C 循环）。\n\n◆ 脚本库\n  录制回放页可把当前录制“保存”为命名脚本，下拉框切换后“加载”或“删除”。\n  脚本库自动保存在本机，配合导出/导入配置可以迁移到其他电脑。\n\n◆ 托盘与紧急停止\n  点窗口关闭会最小化到系统托盘（托盘右键菜单可开始/停止/退出，可在设置里\n  关闭此行为）。开启“紧急停止”后，连点/回放/录制运行中把鼠标快速甩到屏幕\n  左上角，所有动作立即停止并弹出通知——脚本跑飞时的保命开关。\n\n◆ 全局热键（任何窗口下有效）\n  F6 开始/停止连点 · F8 开始/停止录制 · F9 开始/停止回放\n  触发后会自动跳到对应页面显示状态。\n\n◆ 配置与外观\n  · 所有设置自动保存，下次打开原样恢复。\n  · “设置”页可导出/导入完整配置（含全部参数与录制脚本），换电脑一键还原。\n  · 顶栏 ☀/🌙 切换浅色/深色主题。\n\n【常见问题】\n\n· 连点时还能用鼠标干别的事吗？\n  “固定坐标”模式可以：自动点击注入到固定点，你的鼠标在其他窗口正常工作\n  （注意别让其他窗口挡住目标位置）。“跟随鼠标”“多点循环”和“回放”都会\n  占用鼠标，期间无法干别的。\n· 录不到某些窗口的点击？\n  目标程序若以管理员身份运行，普通权限的程序收不到它的输入事件。右键本软件\n  →“以管理员身份运行”再录制。\n· 通过远程桌面(RDP)连接无屏电脑使用？\n  本软件已声明 DPI 感知，坐标系自动统一。注意：录制和回放时保持 RDP 窗口\n  分辨率一致；录制期间保持会话连接。\n· 回放的双击变成两次单击？\n  本软件已自动识别“双击对”：回放时两次点击共用位置偏移、间隔保持在系统\n  双击时限内。若仍异常，把“位置偏移”调小（≤3px）。\n· 杀毒软件报毒？\n  PyInstaller 打包的单文件程序偶发误报，加入白名单即可。\n· 点击无效？\n  某些游戏/应用使用驱动级输入检测，SendInput 无法生效；模拟器窗口一般正常。\n  请勿最小化目标窗口。\n',
+    "en": '[Quick Start]\n\n◆ Auto Clicking (three modes)\n  · Follow mouse: clicks wherever the mouse is. F6 to start, F6 to stop.\n  · Fixed position: click "Pick position (3s)", move the mouse to the target\n    within the countdown — the position is captured automatically. Then F6\n    clicks that point while you work in other windows (don\'t cover it).\n  · Multi-point: add coordinates to the list ("Pick & add" countdown or type\n    them; up to 3 rows visible, scroll for more; editable, deletable) —\n    clicking cycles through the list in order.\n  · Interval and jitter each have their own ms/s unit, e.g. "every 5s ± 100ms".\n  · Loops = 0 means infinite.\n\n◆ Record & Replay\n  Press F8 to record — move paths, press/release, double-clicks, drags and the\n  real timing of every action are captured; F8 again to finish. F9 replays with\n  speed, interval jitter, position offset and loops. Export/Import scripts to\n  reuse recordings.\n\n◆ Humanized anti-detection\n  When on: intervals follow a Gaussian distribution (dense near center,\n  occasionally faster/slower); each click has ~5% chance of an 80–350ms\n  micro-pause; landing points are Gaussian-offset; press duration is random.\n  Fixed periods are the easiest machine signature to detect statistically —\n  keep it on. Replayed "double-click pairs" are protected automatically:\n  both clicks share one offset and the gap stays within the system limit.\n\n◆ Click Action (extensions)\n  In "Click Behavior" choose: Single (default), Double (two fast clicks at the\n  same point, gap kept within the system double-click limit), Drag (press →\n  smooth move → release; in Multi-point mode it drags from one coordinate to\n  the next — A to B, then B to C, cycling).\n\n◆ Script Library\n  Save the current recording as a named script, switch via the dropdown, then\n  Load or Delete. The library persists locally; use config export/import to\n  move everything to another PC.\n\n◆ Tray & Emergency Stop\n  Closing the window minimizes to the system tray (right-click the tray icon\n  for start/stop/quit; can be disabled in Settings). With "Emergency stop" on,\n  flinging the mouse to the top-left corner while running instantly stops\n  clicking/replay/recording and shows a notification — the safety switch when\n  a script runs away.\n\n◆ Global Hotkeys (work over any window)\n  F6 click · F8 record · F9 replay\n  Triggering a hotkey switches to the matching tab so status is visible.\n\n◆ Config & Appearance\n  · All settings persist automatically.\n  · Export/Import the full config (all parameters + recorded script) in\n    Settings to move to another PC.\n  · ☀/🌙 in the header switches light/dark theme.\n\n[FAQ]\n\n· Can I use the mouse for other things while auto-clicking?\n  "Fixed position" mode: yes — clicks are injected at the fixed point while you\n  work in other windows (don\'t cover the target). "Follow mouse", "Multi-point"\n  and Replay occupy the mouse, so no.\n· Some windows can\'t be recorded?\n  If the target app runs as administrator, a normal-privilege app cannot receive\n  its input. Right-click this app → "Run as administrator", then record.\n· Using a headless PC via RDP?\n  This app is DPI-aware, so coordinate systems unify automatically. Keep the RDP\n  window resolution the same between recording and replay; stay connected while\n  recording.\n· Replayed double-clicks become two single clicks?\n  Double-click pairs are detected automatically: both clicks share one position\n  offset and the gap stays within the system double-click time. If it still\n  fails, reduce "Position offset" to <= 3 px.\n· Antivirus flags the exe?\n  Occasional false positive for PyInstaller one-file builds — add an exclusion.\n· Clicks have no effect?\n  Some games/apps use driver-level input checks that SendInput cannot pass.\n  Emulator windows normally work. Do not minimize the target window.\n',
 }
 
 
@@ -371,7 +374,7 @@ def default_lang():
 # ---------------- 简易响应变量 ----------------
 
 class Var:
-    """最小可观察变量：界面控件与逻辑共享（替代 tkinter Variable）。"""
+    """最小可观察变量：界面控件与逻辑共享。"""
 
     def __init__(self, value):
         self._v = value
@@ -394,7 +397,7 @@ class Var:
         self._cbs.append(cb)
 
 
-# ---------------- 主题（浅色 / 深色，Apple 中性灰阶） ----------------
+# ---------------- 主题 ----------------
 
 THEMES = {
     "light": {
@@ -405,7 +408,6 @@ THEMES = {
         "SECOND": "#FFFFFF", "SECOND_H": "#F3F4F7", "SECOND_P": "#E8EAEE",
         "SW_OFF": "#E9E9EA", "KNOB": "#FFFFFF", "SEG_OUT": "#E5E7EC",
         "TOOLTIP_BG": "#1D1D1F", "TOOLTIP_FG": "#F5F5F7",
-        "GREEN": "#34C759", "RED": "#FF453A", "ORANGE": "#FF9500",
     },
     "dark": {
         "BG": "#1E1F24", "CARD": "#2A2B31", "HAIR": "#3A3B42",
@@ -415,12 +417,10 @@ THEMES = {
         "SECOND": "#33343B", "SECOND_H": "#3D3E45", "SECOND_P": "#46474D",
         "SW_OFF": "#46474D", "KNOB": "#E8E8EC", "SEG_OUT": "#46474D",
         "TOOLTIP_BG": "#F2F2F5", "TOOLTIP_FG": "#1D1D1F",
-        "GREEN": "#30D158", "RED": "#FF453A", "ORANGE": "#FF9F0A",
     },
 }
 CUR = dict(THEMES["light"])
 
-# 逻辑状态色（浅色/深色都用语义色）
 GREEN = "#34C759"
 RED = "#FF453A"
 ORANGE = "#FF9500"
@@ -431,11 +431,11 @@ def make_qss(t):
 QWidget {{
   background: {t['BG']};
   color: {t['TEXT']};
-  font-family: "Segoe UI";
+  font-family: "Microsoft YaHei", "Segoe UI";
   font-size: 13px;
 }}
 QLabel {{ background: transparent; }}
-#header {{ background: {t['CARD']}; border-bottom: 1px solid {t['HAIR']}; }}
+#header {{ background: {t['CARD']}; border: 1px solid {t['HAIR']}; border-radius: 14px; }}
 #titleLabel {{ font-size: 16px; font-weight: 600; background: transparent; color: {t['TEXT']}; }}
 #caption {{ color: {t['MUTED']}; font-size: 12px; background: transparent; }}
 #card {{ background: {t['CARD']}; border: 1px solid {t['HAIR']}; border-radius: 16px; }}
@@ -486,6 +486,9 @@ QToolTip {{
   border-radius: 8px; padding: 6px 9px; font-size: 12px;
 }}
 QTextEdit {{ background: {t['CARD']}; border: none; font-size: 13px; color: {t['TEXT']}; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; }}
+QScrollBar::handle:vertical {{ background: {t['MUTED']}; border-radius: 4px; min-height: 30px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 QComboBox {{
   background: {t['FIELD']}; border: 1px solid transparent; border-radius: 8px;
   padding: 5px 10px; font-size: 13px; color: {t['TEXT']};
@@ -514,9 +517,6 @@ QMessageBox QPushButton {{
 QMessageBox QPushButton:hover {{ background: {t['PRIMARY_H']}; }}
 QInputDialog {{ background: {t['CARD']}; }}
 QFileDialog {{ background: {t['CARD']}; }}
-QScrollBar:vertical {{ background: transparent; width: 8px; }}
-QScrollBar::handle:vertical {{ background: {t['MUTED']}; border-radius: 4px; min-height: 30px; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 """
 
 
@@ -533,14 +533,14 @@ class Segmented(QWidget):
     def __init__(self, options, var, on_change=None, height=30, font_pt=10,
                  pad=None, min_w=None, parent=None):
         super().__init__(parent)
-        self.opts = options                       # [(value, label)]
+        self.opts = options
         self.var = var
         self.cb = on_change
         self.font_pt = font_pt
         self.pad = pad if pad is not None else (24 if font_pt <= 9 else 34)
         self.min_w = min_w if min_w is not None else (46 if font_pt <= 9 else 58)
         self.setFixedHeight(height)
-        self._pos = float(self._index_of(var.get()))   # 滑块动画位置
+        self._pos = float(self._index_of(var.get()))
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(180)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -570,7 +570,7 @@ class Segmented(QWidget):
         self.update()
 
     def _fit(self):
-        fm = QFontMetrics(QFont("Segoe UI", self.font_pt))
+        fm = QFontMetrics(QFont("Microsoft YaHei", self.font_pt))
         w = max(fm.horizontalAdvance(lbl) for _, lbl in self.opts) + self.pad
         self.setFixedWidth(max(w, self.min_w) * len(self.opts))
 
@@ -579,7 +579,7 @@ class Segmented(QWidget):
         idx = max(0, min(n - 1, int(e.position().x() / (self.width() / n))))
         val = self.opts[idx][0]
         if val != self.var.get():
-            self.var.set(val)          # 触发 _sync 滑动动画
+            self.var.set(val)
             if self.cb:
                 self.cb(val)
             self.changed.emit(val)
@@ -600,8 +600,8 @@ class Segmented(QWidget):
                           (h - 2 * m) / 2, (h - 2 * m) / 2)
         p.setPen(Qt.PenStyle.NoPen)
         cur = self.var.get()
-        fsel = QFont("Segoe UI", self.font_pt, QFont.Weight.DemiBold)
-        fnorm = QFont("Segoe UI", self.font_pt)
+        fsel = QFont("Microsoft YaHei", self.font_pt, QFont.Weight.DemiBold)
+        fnorm = QFont("Microsoft YaHei", self.font_pt)
         for i, (val, lbl) in enumerate(self.opts):
             # 滑块始终为浅色，选中文字固定用深色保证对比度
             p.setPen(QColor("#1D1D1F") if val == cur else QColor(CUR["MUTED"]))
@@ -650,7 +650,7 @@ class Switch(QWidget):
         p.setBrush(mix(QColor(CUR["SW_OFF"]), QColor(GREEN), self._pos))
         p.drawRoundedRect(QRectF(0, 0, w, h), h / 2, h / 2)
         kx = h / 2 + self._pos * (w - h)
-        p.setBrush(QColor(0, 0, 0, 28))            # 圆钮微投影
+        p.setBrush(QColor(0, 0, 0, 28))
         p.drawEllipse(QPointF(kx, h / 2 + 1.6), h / 2 - 3.5, h / 2 - 3.5)
         p.setBrush(QColor(CUR["KNOB"]))
         p.drawEllipse(QPointF(kx, h / 2), h / 2 - 3.5, h / 2 - 3.5)
@@ -745,10 +745,9 @@ class PointsList(QWidget):
         self.hint_fn = hint_fn
         self.hint = caption("")
         outer.addWidget(self.hint)
-        self.rows = []                     # [(row_widget, x_edit, y_edit)]
+        self.rows = []
         self.rebuild(list(initial or []))
 
-    # 对外接口 -------------------------------------------------
     def collect(self):
         pts = []
         for _, ex, ey in self.rows:
@@ -782,7 +781,6 @@ class PointsList(QWidget):
             self.rebuild(pts)
             self.changed.emit(self.collect())
 
-    # 内部 -----------------------------------------------------
     def rebuild(self, pts):
         for rw, _, _ in self.rows:
             rw.deleteLater()
@@ -790,10 +788,12 @@ class PointsList(QWidget):
         for p in pts:
             self._add_row(p[0], p[1])
         self._update_hint()
-        self._fit_height()
-        self._scroll_to_latest()
+        self._fit_scroll_height()
+        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(
+            self.scroll.verticalScrollBar().maximum()))
 
-    def _fit_height(self):
+    def _fit_scroll_height(self):
+        """列表容器高度：空=隐藏；不足3行=贴合内容；超过3行=封顶出滚动条。"""
         if not self.rows:
             self.scroll.setFixedHeight(0)
             self.scroll.setVisible(False)
@@ -801,11 +801,6 @@ class PointsList(QWidget):
         self.scroll.setVisible(True)
         content = len(self.rows) * 22 + (len(self.rows) - 1) * 4 + 4
         self.scroll.setFixedHeight(min(content, self.MAX_H))
-
-    def _scroll_to_latest(self):
-        # 延迟到布局完成后再滚，否则 maximum 还没更新
-        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(
-            self.scroll.verticalScrollBar().maximum()))
 
     def _add_row(self, x, y):
         rw = QWidget()
@@ -817,7 +812,7 @@ class PointsList(QWidget):
         idx = QLabel(f"{n + 1}.")
         idx.setObjectName("muted")
         field_qss = (f"QLineEdit{{background:{CUR['CARD']};border:1px solid {CUR['HAIR']};"
-                     "border-radius:6px;padding:2px 7px;font-size:12px;}")
+                     "border-radius:6px;padding:2px 7px;font-size:12px;}}")
         ex = QLineEdit(str(x))
         ex.setFixedWidth(80)
         ex.setFixedHeight(22)
@@ -832,7 +827,7 @@ class PointsList(QWidget):
         btn.setFixedSize(22, 22)
         btn.setProperty("kind", "secondary")
         btn.setStyleSheet("padding:0;min-height:0;font-size:10px;border-radius:7px;color:"
-                          + CUR['MUTED'] + ";")   # 覆盖药丸内边距，避免文字放不下
+                          + CUR['MUTED'] + ";")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda checked=False, i=n: self.remove_row(i))
         h.addWidget(idx)
@@ -849,12 +844,14 @@ class PointsList(QWidget):
         self.hint.setVisible(not self.rows)   # 有坐标时整行隐藏，不留占位空白
 
 
+# ---------------- 应用 ----------------
+
+
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon(resource_path("icon.ico")))
-
 
         # 运行状态
         self.clicking = False
@@ -870,6 +867,8 @@ class App(QMainWindow):
         self._coord_mismatch = 0
         self._rec_dirty = False
         self._ui_q = queue.Queue()
+        self._quit = False
+        self._corner_armed = True
 
         self.lang = default_lang()
         self.V = {}
@@ -893,25 +892,11 @@ class App(QMainWindow):
         self._start_hotkeys()
         self._create_tray()
 
-        self._finalize_size()
+        self._fit_window()
         self.pump = QTimer(self)
         self.pump.timeout.connect(self._pump)
         self.pump.start(80)
         QTimer.singleShot(120, lambda: apply_window_chrome(int(self.winId()), CUR["BG"]))
-
-    def _finalize_size(self):
-        """固定窗口大小：以内容最高的一页（多点模式）为准，仅测一次。"""
-        self.points_box.setVisible(True)
-        self._add_btn.setVisible(True)
-        self.xy_row.setVisible(False)
-        self.tabs.setCurrentIndex(0)
-        QApplication.processEvents()
-        h = max(560, self.centralWidget().sizeHint().height())
-        self.setFixedSize(560, h)
-        m = self.V["pos_mode"].get()
-        self.points_box.setVisible(m == "multi")
-        self._add_btn.setVisible(m == "multi")
-        self.xy_row.setVisible(m != "multi")
 
     # ---------- 变量 ----------
     def _make_vars(self):
@@ -922,7 +907,7 @@ class App(QMainWindow):
         V["interval"] = Var("200")
         V["unit"] = Var("ms")
         V["jitter"] = Var("50")
-        V["jitter_unit"] = Var("ms")   # 抖动独立单位
+        V["jitter_unit"] = Var("ms")
         V["human"] = Var(True)
         V["pos_jitter"] = Var("5")
         V["button"] = Var("left")
@@ -940,6 +925,7 @@ class App(QMainWindow):
         V["points"] = Var([])          # 多点循环：[[x, y], ...]
         self.var_live_coords = Var("")
         self.var_status = Var("")
+        self.var_pill = Var("")
         self.var_rec_info = Var("")
         self.var_preview = Var("")
         self.var_btn_click = Var("")
@@ -955,7 +941,7 @@ class App(QMainWindow):
         return TR[self.lang].get(key, TR["en"].get(key, key))
 
     def _msg(self, text, error=False):
-        """统一样式的对话框：居中文字 + 主题按钮。"""
+        """统一样式的对话框：居中文字 + 主题按钮。测试环境(AC_TEST)不进入模态循环。"""
         box = QMessageBox(self)
         box.setWindowTitle(APP_NAME)
         box.setIcon(QMessageBox.Icon.Critical if error else QMessageBox.Icon.NoIcon)
@@ -992,6 +978,16 @@ class App(QMainWindow):
         if self.V["auto_load"].get():
             self._apply_settings(data.get("settings", {}))
 
+    def _save_persisted(self):
+        try:
+            with open(config_file(), "w", encoding="utf-8") as fp:
+                json.dump({"app": APP_NAME, "version": CFG_VERSION,
+                           "language": self.lang,
+                           "settings": self._settings_snapshot()}, fp,
+                          ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+
     def _lib_load_file(self):
         try:
             with open(config_file("autoclicker_scripts.json"), "r", encoding="utf-8") as fp:
@@ -1008,47 +1004,37 @@ class App(QMainWindow):
         except Exception:
             pass
 
-    def _save_persisted(self):
-        try:
-            with open(config_file(), "w", encoding="utf-8") as fp:
-                json.dump({"app": APP_NAME, "version": CFG_VERSION,
-                           "language": self.lang,
-                           "settings": self._settings_snapshot()}, fp,
-                          ensure_ascii=False, indent=1)
-        except Exception:
-            pass
-
     # ---------- 界面 ----------
     def _build_central(self):
         central = QWidget()
         outer = QHBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        central = QWidget()
-        cl = QVBoxLayout(central)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(0)
+        content = QWidget()
+        content.setMaximumWidth(720)
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(10, 8, 10, 0)   # 顶栏作为圆角卡片悬浮，与下方卡片对齐
+        cl.setSpacing(8)
 
-        # 顶栏
+        # 顶栏（独立圆角卡片）
         self.header = QFrame()
         self.header.setObjectName("header")
-        self.header.setFixedHeight(56)
         hv = QHBoxLayout(self.header)
         hv.setContentsMargins(16, 8, 16, 8)
         hleft = QVBoxLayout()
         hleft.setSpacing(0)
         title = QLabel(APP_NAME)
         title.setObjectName("titleLabel")
+        title.setMinimumWidth(1)
         self.coords_lbl = QLabel("")
         self.coords_lbl.setObjectName("caption")
+        self.coords_lbl.setMinimumWidth(1)
         vx, vy, vw, vh = virtual_screen()
         self._res_text = f"{vw}×{vh}" + (f" ({vx},{vy})" if (vx, vy) != (0, 0) else "")
         hleft.addWidget(title)
         hleft.addWidget(self.coords_lbl)
         hv.addLayout(hleft)
         hv.addStretch(1)
-        self.res_lbl = QLabel("")
-        self.res_lbl.setObjectName("caption")
         hv.addSpacing(12)
         self.lang_seg = Segmented([("zh", "中文"), ("en", "EN")],
                                   Var(self.lang),
@@ -1062,7 +1048,11 @@ class App(QMainWindow):
                                    height=24, font_pt=10, pad=16, min_w=32)
         self.theme_seg.setToolTip(self.tr("appearance"))
         hv.addWidget(self.theme_seg)
-        cl.addWidget(self.header)
+        header_wrap = QWidget()
+        hw = QVBoxLayout(header_wrap)
+        hw.setContentsMargins(10, 0, 10, 0)
+        hw.addWidget(self.header)
+        cl.addWidget(header_wrap)
 
         # 标签页
         self.tabs = QTabWidget()
@@ -1095,6 +1085,9 @@ class App(QMainWindow):
         self.tabs.addTab(page_help, "  " + self.tr("tab_help") + "  ")
 
         # 底栏
+        status_wrap = QWidget()
+        sw = QVBoxLayout(status_wrap)
+        sw.setContentsMargins(10, 0, 10, 0)
         self.statusbar = QFrame()
         sb = QHBoxLayout(self.statusbar)
         sb.setContentsMargins(14, 2, 14, 10)
@@ -1110,23 +1103,16 @@ class App(QMainWindow):
         hk = QLabel("F6 · F8 · F9")
         hk.setObjectName("caption")
         sb.addWidget(hk)
-        cl.addWidget(self.statusbar)
+        sw.addWidget(self.statusbar)
+        cl.addWidget(status_wrap)
 
-        content = central
-        central = QWidget()
-        outer2 = QHBoxLayout(central)
-        outer2.setContentsMargins(0, 0, 0, 0)
-        outer2.setSpacing(0)
-        outer2.addStretch(1)
-        content.setMaximumWidth(720)
-        outer2.addWidget(content)
-        outer2.addStretch(1)
+        outer.addStretch(1)
+        outer.addWidget(content)
+        outer.addStretch(1)
         self.setCentralWidget(central)
         self.var_status.connect(lambda s: self.status_lbl.setText(s))
         self.var_status.set(self.tr("status_ready"))
         self._refresh_rec_info()
-        self.coords_lbl.setText("●  mouse (0, 0)")
-
         self.coords_lbl.setText(f"●  mouse (0, 0) · {self._res_text}")
 
     def _build_clicker_tab(self, lay):
@@ -1137,10 +1123,6 @@ class App(QMainWindow):
                                ("multi", self.tr("pos_mode_multi"))],
                               self.V["pos_mode"], height=28))
         r.addStretch(1)
-        self._add_btn = Pill(Var(self.tr("add_current")),
-                             on_click=lambda: self.points_list.add_point(*self._last_pos),
-                             kind="secondary")
-        r.addWidget(self._add_btn)
         self._pick_btn = Pill(Var(self.tr("pick_current")), on_click=self._use_current_pos,
                               kind="secondary")
         r.addWidget(self._pick_btn)
@@ -1170,7 +1152,6 @@ class App(QMainWindow):
         pv.addWidget(self.points_list)
         v1.addWidget(self.points_box)
         self.points_box.setVisible(self.V["pos_mode"].get() == "multi")
-        self._add_btn.setVisible(self.V["pos_mode"].get() == "multi")
         self.xy_row.setVisible(self.V["pos_mode"].get() != "multi")
         self.V["pos_mode"].connect(lambda m: self._on_mode_changed(m))
         lay.addWidget(f1)
@@ -1208,6 +1189,8 @@ class App(QMainWindow):
         r3.addStretch(1)
         pv = QLabel("")
         pv.setObjectName("muted")
+        pv.setWordWrap(True)
+        pv.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.var_preview.connect(pv.setText)
         pv.setText(self.var_preview.get())
         v2.addWidget(pv)
@@ -1293,8 +1276,8 @@ class App(QMainWindow):
         v2.addLayout(g)
         lay.addWidget(f2)
 
-        f3, v3 = card(self.tr("script_lib"))
-        r = row(v3)
+        f4, v4 = card(self.tr("script_lib"))
+        r = row(v4)
         self.lib_combo = QComboBox()
         self.lib_combo.setMinimumHeight(30)
         self.lib_combo.currentTextChanged.connect(self._lib_autoload)
@@ -1302,7 +1285,7 @@ class App(QMainWindow):
         r.addWidget(Pill(Var(self.tr("lib_save")), on_click=self._lib_save, kind="secondary"))
         r.addWidget(Pill(Var(self.tr("lib_del")), on_click=self._lib_del, kind="secondary"))
         self._lib_refresh()
-        lay.addWidget(f3)
+        lay.addWidget(f4)
         lay.addStretch(1)
 
     def _build_settings_tab(self, lay):
@@ -1355,7 +1338,7 @@ class App(QMainWindow):
         lay.addWidget(f2)
 
         f3, v3 = card(self.tr("about"))
-        v3.addWidget(caption(f"{APP_NAME} · v4.5 · Windows 10/11"))
+        v3.addWidget(caption(f"{APP_NAME} · v4.6 · Windows 10/11"))
         v3.addWidget(caption("F6 连点 · F8 录制 · F9 回放" if self.lang == "zh"
                              else "F6 Click · F8 Record · F9 Replay"))
         lay.addWidget(f3)
@@ -1399,10 +1382,9 @@ class App(QMainWindow):
         multi = m == "multi"
         if hasattr(self, "points_box"):
             self.points_box.setVisible(multi)
-        if hasattr(self, "_add_btn"):
-            self._add_btn.setVisible(multi)
         if hasattr(self, "xy_row"):
             self.xy_row.setVisible(m != "multi")
+        self._fit_window()
 
     def _rebuild_central(self):
         old = self.takeCentralWidget()
@@ -1411,7 +1393,14 @@ class App(QMainWindow):
         self._build_central()
         self._update_preview()      # 预览/录制信息随语言重建
         self._refresh_rec_info()
-        self._finalize_size()
+        self._fit_window()
+
+    def _fit_window(self):
+        """窗口大小按各页实际内容自适应（中文窄、英文宽），高度贴合内容。"""
+        pages = [self.tabs.widget(i) for i in range(self.tabs.count())]
+        w = max(p.sizeHint().width() for p in pages) + 40
+        h = max(560, self.centralWidget().sizeHint().height())
+        self.setFixedSize(min(700, max(520, w)), h)
 
     # ---------- 事件泵 ----------
     def _pump(self):
@@ -1423,7 +1412,10 @@ class App(QMainWindow):
             pass
         x, y = self._last_pos
         if hasattr(self, "coords_lbl"):
-            self.coords_lbl.setText(f"●  mouse ({x}, {y}) · {self._res_text}")
+            full = f"●  mouse ({x}, {y}) · {self._res_text}"
+            fm = self.coords_lbl.fontMetrics()
+            self.coords_lbl.setText(fm.elidedText(full, Qt.TextElideMode.ElideRight,
+                                                  max(80, self.coords_lbl.width() - 4)))
         if self._rec_dirty:
             self._rec_dirty = False
             self._refresh_rec_info()
@@ -1443,24 +1435,20 @@ class App(QMainWindow):
         self.var_btn_rec.set(self.tr("stop_rec") if self.recording else self.tr("record"))
         self.var_btn_play.set(self.tr("stop_play") if self.playing else self.tr("play"))
         try:
-            self.tray_act_show.setText(self.tr("tray_show"))
-            self.tray_act_click.setText(self.tr("menu_stop_click") if self.clicking else self.tr("menu_click"))
-            self.tray_act_rec.setText(self.tr("menu_stop_rec") if self.recording else self.tr("menu_rec"))
-            self.tray_act_play.setText(self.tr("menu_stop_play") if self.playing else self.tr("menu_play"))
-        except (RuntimeError, AttributeError):
-            pass
-        try:
             self.btn_click.setStyleSheet(
                 f"background:{RED};color:white;border:none;border-radius:20px;"
                 "min-height:40px;font-size:14px;font-weight:600;"
-                "QPushButton#hero:hover{background:#E63E33;}"
                 if self.clicking else "")
         except RuntimeError:
             pass
         try:
             self.btn_rec.set_kind("danger" if self.recording else "primary")
             self.btn_play.set_kind("danger" if self.playing else "primary")
-        except RuntimeError:
+            self.tray_act_show.setText(self.tr("tray_show"))
+            self.tray_act_click.setText(self.tr("menu_stop_click") if self.clicking else self.tr("menu_click"))
+            self.tray_act_rec.setText(self.tr("menu_stop_rec") if self.recording else self.tr("menu_rec"))
+            self.tray_act_play.setText(self.tr("menu_stop_play") if self.playing else self.tr("menu_play"))
+        except (RuntimeError, AttributeError):
             pass
 
     def _set_status(self, s):
@@ -1499,7 +1487,7 @@ class App(QMainWindow):
             i=self._fmt_ms(interval), lo=self._fmt_ms(lo), hi=self._fmt_ms(hi), mode=mode))
 
     def _use_current_pos(self):
-        """3 秒倒计时后捕获当前鼠标位置：按钮按下后你还有时间把鼠标移到目标上。"""
+        """3 秒倒计时后捕获当前鼠标位置。"""
         if getattr(self, "_picking", False):
             return
         self._picking = True
@@ -1534,6 +1522,13 @@ class App(QMainWindow):
             self._pick_btn.setEnabled(False)
         tick()
 
+    def _start_coord_polling(self):
+        def poll():
+            while True:
+                self._poll_once()
+                time.sleep(0.1)
+        threading.Thread(target=poll, daemon=True).start()
+
     def _poll_once(self):
         """单次轮询：更新坐标 + 紧急停止检测（可被测试直接调用）。"""
         try:
@@ -1541,8 +1536,10 @@ class App(QMainWindow):
             self._last_pos = pos
             running = self.clicking or self.playing or self.recording
             in_corner = pos[0] <= 10 and pos[1] <= 10
-            if running and in_corner and self._corner_armed                     and self.V["corner_stop"].get():
+            if running and in_corner and self._corner_armed \
+                    and self.V["corner_stop"].get():
                 self._corner_armed = False
+
                 def emergency():
                     if self.clicking:
                         self.toggle_clicker()
@@ -1562,58 +1559,6 @@ class App(QMainWindow):
         except Exception:
             pass
 
-    def _start_coord_polling(self):
-        def poll():
-            while True:
-                self._poll_once()
-                time.sleep(0.1)
-        threading.Thread(target=poll, daemon=True).start()
-
-    # ---------- 托盘 ----------
-    def _create_tray(self):
-        self.tray = QSystemTrayIcon(QIcon(resource_path("icon.ico")), self)
-        self.tray.setToolTip(APP_NAME)
-        menu = QMenu()
-        self.tray_act_show = QAction(self.tr("tray_show"), menu)
-        self.tray_act_show.triggered.connect(self._toggle_visible)
-        self.tray_act_click = QAction("", menu)
-        self.tray_act_click.triggered.connect(lambda: self._ui_q.put(self.toggle_clicker))
-        self.tray_act_rec = QAction("", menu)
-        self.tray_act_rec.triggered.connect(lambda: self._ui_q.put(self.toggle_record))
-        self.tray_act_play = QAction("", menu)
-        self.tray_act_play.triggered.connect(lambda: self._ui_q.put(self.toggle_play))
-        quit_act = QAction(self.tr("tray_quit"), menu)
-        quit_act.triggered.connect(self._quit_app)
-        for a in (self.tray_act_show, self.tray_act_click,
-                  self.tray_act_rec, self.tray_act_play):
-            menu.addAction(a)
-        menu.addSeparator()
-        menu.addAction(quit_act)
-        self.tray.setContextMenu(menu)
-        self.tray.activated.connect(self._on_tray_activated)
-        self.tray.show()
-
-    def _toggle_visible(self):
-        if self.isVisible():
-            self.hide()
-        else:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-
-    def _on_tray_activated(self, reason):
-        # 左键单击/双击托盘图标：显示并聚焦主窗口
-        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
-                      QSystemTrayIcon.ActivationReason.DoubleClick):
-            if not self.isVisible():
-                self.showNormal()
-            self.raise_()
-            self.activateWindow()
-
-    def _quit_app(self):
-        self._quit = True
-        self.close()
-
     # ---------- 连点 ----------
     def toggle_clicker(self):
         if self.clicking:
@@ -1623,10 +1568,10 @@ class App(QMainWindow):
                 and not self.V["points"].get()):
             self._msg(self.tr("points_empty"))
             return
-        self.clicking = True        # 同步置位：快速重复触发不会重复启动线程
         self.tabs.setCurrentIndex(0)     # 热键触发时跳到对应页，状态可见
         if self._last_pos[0] <= 10 and self._last_pos[1] <= 10:
             self._corner_armed = False
+        self.clicking = True        # 同步置位：快速重复触发不会重复启动线程
         self.clicker_stop = threading.Event()
         threading.Thread(target=self._clicker_loop, args=(self.clicker_stop,),
                          daemon=True).start()
@@ -1644,6 +1589,7 @@ class App(QMainWindow):
         pts = [(int(p[0]), int(p[1])) for p in (V["points"].get() or [])]
         human = V["human"].get()
         if mode == "multi" and not pts:
+            self.clicking = False
             return
         # 多点循环：循环次数按“完整轮数”计；单点模式按点击次数计
         total = loops * len(pts) if mode == "multi" and loops > 0 else loops
@@ -1686,7 +1632,7 @@ class App(QMainWindow):
             self._set_status(self.tr("clicking").format(n=n))
             deadline = time.time() + human_interval_ms(interval, jitter, human)
             while not stop.is_set() and time.time() < deadline:
-                time.sleep(0.005)
+                time.sleep(0.005)   # sleep 轮询：绝不卡死（Event.wait 在此环境偶发不唤醒）
         self.clicking = False
         self._set_status(self.tr("click_done").format(n=n))
 
@@ -1785,10 +1731,10 @@ class App(QMainWindow):
             self._msg(self.tr("need_record"))
             return
         self.playing = True              # 同步置位
-        self.play_stop = threading.Event()
-        self.tabs.setCurrentIndex(1)         # 热键触发时跳到录制页
+        self.tabs.setCurrentIndex(1)     # 热键触发时跳到录制页
         if self._last_pos[0] <= 10 and self._last_pos[1] <= 10:
             self._corner_armed = False
+        self.play_stop = threading.Event()
         threading.Thread(target=self._play_loop, args=(self.play_stop,),
                          daemon=True).start()
 
@@ -2026,6 +1972,51 @@ class App(QMainWindow):
         h.start()
         self.kb_listener = h
 
+    # ---------- 托盘 ----------
+    def _create_tray(self):
+        self.tray = QSystemTrayIcon(QIcon(resource_path("icon.ico")), self)
+        self.tray.setToolTip(APP_NAME)
+        menu = QMenu()
+        self.tray_act_show = QAction(self.tr("tray_show"), menu)
+        self.tray_act_show.triggered.connect(self._toggle_visible)
+        self.tray_act_click = QAction("", menu)
+        self.tray_act_click.triggered.connect(lambda: self._ui_q.put(self.toggle_clicker))
+        self.tray_act_rec = QAction("", menu)
+        self.tray_act_rec.triggered.connect(lambda: self._ui_q.put(self.toggle_record))
+        self.tray_act_play = QAction("", menu)
+        self.tray_act_play.triggered.connect(lambda: self._ui_q.put(self.toggle_play))
+        quit_act = QAction(self.tr("tray_quit"), menu)
+        quit_act.triggered.connect(self._quit_app)
+        for a in (self.tray_act_show, self.tray_act_click,
+                  self.tray_act_rec, self.tray_act_play):
+            menu.addAction(a)
+        menu.addSeparator()
+        menu.addAction(quit_act)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.show()
+
+    def _toggle_visible(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        # 左键单击/双击托盘图标：显示并聚焦主窗口
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick):
+            if not self.isVisible():
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def _quit_app(self):
+        self._quit = True
+        self.close()
+
     def closeEvent(self, e):
         if self.V["close_to_tray"].get() and not self._quit:
             e.ignore()
@@ -2052,9 +2043,30 @@ class App(QMainWindow):
         e.accept()
 
 
+def enable_dpi_awareness():
+    """进程级 Per-Monitor DPI 感知（在 QApplication 创建前调用）。
+    保证 GetCursorPos/SendInput/低级钩子三者坐标统一（RDP/缩放环境关键）。"""
+    try:
+        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 def main():
+    enable_dpi_awareness()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setStyleSheet(make_qss(CUR))
     win = App()
     win.show()
     sys.exit(app.exec())
