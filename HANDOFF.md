@@ -1,7 +1,7 @@
 # AutoClicker Pro — 项目交接文档
 
 > 给接手本项目的 AI / 开发者：本文档足以在 10 分钟内理解项目全貌。
-> 当前版本 v4.6 · 全量回归测试 45/45 通过 · 已上传 GitHub（Releases 提供打包 exe）。
+> 当前版本 v4.7 · 全量回归测试 45/45 通过 · 已上传 GitHub（Releases 提供打包 exe）。
 
 ## 一、这是什么
 
@@ -130,6 +130,10 @@ auto_load · theme(light/dark) · points([[x,y],...]) · corner_stop · close_to
 
 ## 十、变更记录
 
+- **v4.7**：全局热键后端从 pynput `GlobalHotKeys` 换成 Win32 `RegisterHotKey`
+  （`WindowsHotkeys`，Qt 原生事件过滤器收 `WM_HOTKEY`，在 GUI 线程触发，RDP
+  转发输入下更可靠）；热键注册失败时状态栏显示本地化提示（新文案键
+  `hotkey_unavailable`）；新增 `build.ps1` 构建脚本与 `tests/test_hotkeys.py`（4 项）。
 - **v4.6**：界面适配改进——动态窗口尺寸（`_fit_window`，中英文宽度自适应）、
   坐标标签超长省略、回放预览自动换行、全局字体改微软雅黑、顶栏改悬浮圆角卡片、
   托盘"退出"与关闭到托盘行为区分（`_quit` 标志）；移除多点列表"＋添加当前"

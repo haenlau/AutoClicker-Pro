@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AutoClicker Pro — Windows 鼠标连点器 & 录制回放（PySide6 / Qt 版）v4.6
+AutoClicker Pro — Windows 鼠标连点器 & 录制回放（PySide6 / Qt 版）v4.7
 设计语言：Apple 液态玻璃 / macOS（中性灰阶、发丝线、抗锯齿圆角、药丸按钮、
 按压/悬停反馈、语义色、动画开关与分段控制器）
 
@@ -1381,7 +1381,7 @@ class App(QMainWindow):
         lay.addWidget(f2)
 
         f3, v3 = card(self.tr("about"))
-        v3.addWidget(caption(f"{APP_NAME} · v4.6 · Windows 10/11"))
+        v3.addWidget(caption(f"{APP_NAME} · v4.7 · Windows 10/11"))
         v3.addWidget(caption("F6 连点 · F8 录制 · F9 回放" if self.lang == "zh"
                              else "F6 Click · F8 Record · F9 Replay"))
         lay.addWidget(f3)
