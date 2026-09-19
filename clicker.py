@@ -16,6 +16,7 @@ AutoClicker Pro — Windows 鼠标连点器 & 录制回放（PySide6 / Qt 版）
 QTimer 在 GUI 线程统一执行。所有可中断等待用 sleep 轮询（勿改 Event.wait）。
 """
 import ctypes
+from ctypes import wintypes
 import json
 import os
 import queue
@@ -25,6 +26,7 @@ import threading
 import time
 
 from PySide6.QtCore import (QTimer, Qt, QSize, QEasingCurve, QVariantAnimation,
+                            QAbstractNativeEventFilter,
                             QRectF, QPointF, Signal)
 from PySide6.QtGui import QColor, QIcon, QPainter, QFont, QFontMetrics, QAction
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
@@ -34,7 +36,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
                                QScrollArea, QSystemTrayIcon, QMenu, QComboBox,
                                QInputDialog, QSizePolicy)
 
-from pynput import mouse, keyboard
+from pynput import mouse
 
 APP_NAME = "AutoClicker Pro"
 CFG_VERSION = 4
@@ -60,6 +62,7 @@ TR = {
         "pos_jitter": "位置偏移", "pos_jitter_unit": "px", "mouse_button": "鼠标按键",
         "left": "左", "right": "右", "loops": "循环次数", "loops_unit": "次  ·  0 = 无限",
         "start": "开始连点 · F6", "stop_click": "停止连点 · F6",
+        "hotkey_unavailable": "快捷键 {keys} 无法注册（可能已被其他程序占用）；请使用界面按钮，或关闭其他连点器后重启。",
         "record": "●  录制 · F8", "stop_rec": "■  停止录制 · F8",
         "play": "▶  回放 · F9", "stop_play": "■  停止回放 · F9",
         "clear": "清空", "save_script": "导出脚本", "load_script": "导入脚本",
@@ -116,6 +119,7 @@ TR = {
         "help_title": "使用帮助",
     },
     "en": {
+        "hotkey_unavailable": "Could not register {keys} (possibly in use by another app). Use the buttons, or close other clickers and restart.",
         "app_title": "Mouse Auto Clicker & Macro",
         "tab_clicker": "Auto Clicker", "tab_record": "Record & Replay",
         "tab_settings": "Settings", "tab_help": "Help",
@@ -199,6 +203,45 @@ HELP_TEXT = {
 
 # ---------------- Win32 SendInput ----------------
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+user32.RegisterHotKey.restype = wintypes.BOOL
+user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.UnregisterHotKey.restype = wintypes.BOOL
+
+
+class WindowsHotkeys(QAbstractNativeEventFilter):
+    """Receive WM_HOTKEY on Qt's GUI thread, including forwarded key input."""
+
+    WM_HOTKEY = 0x0312
+    MOD_NOREPEAT = 0x4000
+
+    def __init__(self, bindings):
+        super().__init__()
+        self._callbacks = {}
+        self.failed = []
+        self._application = QApplication.instance()
+        self._application.installNativeEventFilter(self)
+        for hotkey_id, vk, name, callback in bindings:
+            if user32.RegisterHotKey(None, hotkey_id, self.MOD_NOREPEAT, vk):
+                self._callbacks[hotkey_id] = callback
+            else:
+                self.failed.append(name)
+
+    def nativeEventFilter(self, event_type, message):
+        if event_type in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+            msg = wintypes.MSG.from_address(int(message))
+            callback = self._callbacks.get(int(msg.wParam))
+            if msg.message == self.WM_HOTKEY and callback is not None:
+                callback()
+                return True, 0
+        return False, 0
+
+    def stop(self):
+        # Register/unregister must both run on the GUI thread.
+        for hotkey_id in self._callbacks:
+            user32.UnregisterHotKey(None, hotkey_id)
+        self._callbacks.clear()
+        self._application.removeNativeEventFilter(self)
 
 INPUT_MOUSE = 0
 MOUSEEVENTF_MOVE = 0x0001
@@ -1963,14 +2006,14 @@ class App(QMainWindow):
 
     # ---------- 热键 ----------
     def _start_hotkeys(self):
-        h = keyboard.GlobalHotKeys({
-            "<f6>": lambda: self._ui_q.put(self.toggle_clicker),
-            "<f8>": lambda: self._ui_q.put(self.toggle_record),
-            "<f9>": lambda: self._ui_q.put(self.toggle_play),
-        })
-        h.daemon = True
-        h.start()
-        self.kb_listener = h
+        self.kb_listener = WindowsHotkeys([
+            (0xAC06, 0x75, "F6", lambda: self._ui_q.put(self.toggle_clicker)),
+            (0xAC08, 0x77, "F8", lambda: self._ui_q.put(self.toggle_record)),
+            (0xAC09, 0x78, "F9", lambda: self._ui_q.put(self.toggle_play)),
+        ])
+        if self.kb_listener.failed:
+            self._set_status(self.tr("hotkey_unavailable").format(
+                keys=", ".join(self.kb_listener.failed)))
 
     # ---------- 托盘 ----------
     def _create_tray(self):
